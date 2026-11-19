@@ -1,0 +1,142 @@
+'use client';
+
+/**
+ * Model access — saved inference credentials for this workspace.
+ *
+ * Each entry is a provider + API key (with an optional custom endpoint) that
+ * agent configs reference by id — the raw key stays server-side after it is
+ * saved here. The add dialog validates the key live (list models + one-shot
+ * completion) before saving.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import { Card } from '@/components/ui/card';
+import { KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia } from '@/components/ui/empty';
+import { Spinner } from '@/components/ui/spinner';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { useConfirm } from '@/components/ui/dialogs-provider';
+import { useAdminSettings, canAdminister } from '@/components/settings/admin-context';
+import { ReadOnlyBanner, SectionHeader } from '@/components/settings/section-chrome';
+import { ProviderIcon } from '@/components/icons/agent-icons';
+import { AddModelAccessDialog } from '@/components/settings/model-access-dialog';
+import { workspaceApi } from '@/lib/api';
+import type { CloudAgentProvider, ModelAccessEntry } from '@/lib/types';
+import { useT } from '@/lib/i18n';
+
+export default function ModelAccessSettingsPage() {
+  const { me } = useAdminSettings();
+  const t = useT();
+  const confirm = useConfirm();
+  const editable = canAdminister(me);
+
+  const [entries, setEntries] = useState<ModelAccessEntry[]>([]);
+  const [providers, setProviders] = useState<CloudAgentProvider[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setEntries(await workspaceApi.listModelAccess());
+    } catch {
+      setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    workspaceApi.getCloudProviders().then(setProviders).catch(() => {});
+  }, [load]);
+
+  const remove = async (entry: ModelAccessEntry) => {
+    const ok = await confirm({
+      title: t('admin.modelAccessDeleteTitle'),
+      description: t('admin.modelAccessDeleteBody', { label: entry.label }),
+      confirmText: t('admin.modelAccessDelete'),
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await workspaceApi.deleteModelAccess(entry.id);
+      await load();
+      toast.success(t('admin.modelAccessDeleted'));
+    } catch {
+      toast.error(t('admin.modelAccessDeleteFailed'));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-8">
+      <SectionHeader title={t('admin.modelAccessTitle')} description={t('admin.modelAccessDescription')} />
+      {!editable && <ReadOnlyBanner />}
+
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">{t('admin.modelAccessListTitle')}</span>
+          <div className="flex items-center gap-1.5">
+            <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
+              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+            {editable && (
+              <Button size="sm" onClick={() => setAdding(true)}>
+                <Plus className="size-3.5 mr-1" />{t('admin.modelAccessAdd')}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {loading && entries.length === 0 ? (
+          <div className="flex items-center justify-center py-10">
+            <Spinner className="size-5 text-muted-foreground" />
+          </div>
+        ) : entries.length === 0 ? (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon"><KeyRound /></EmptyMedia>
+              <EmptyDescription>{t('admin.modelAccessEmpty')}</EmptyDescription>
+            </EmptyHeader>
+            {editable && (
+              <EmptyContent>
+                <Button size="sm" onClick={() => setAdding(true)}>
+                  <Plus data-icon="inline-start" />{t('admin.modelAccessAdd')}
+                </Button>
+              </EmptyContent>
+            )}
+          </Empty>
+        ) : (
+          <Card className="gap-0 divide-y py-0">
+            {entries.map((e) => (
+              <div key={e.id} className="flex items-center gap-3 px-4 py-3">
+                <ProviderIcon name={e.provider} size={32} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{e.label}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground">
+                    {[e.provider, e.apiKeyMasked, e.baseUrl].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+                {editable && (
+                  <Button variant="ghost" size="icon" onClick={() => remove(e)} title={t('admin.modelAccessDelete')}>
+                    <Trash2 className="size-4 text-muted-foreground" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </Card>
+        )}
+      </div>
+
+      {adding && (
+        <AddModelAccessDialog
+          providers={providers}
+          createdBy={me?.email ?? undefined}
+          onClose={() => setAdding(false)}
+          onSaved={() => { setAdding(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
